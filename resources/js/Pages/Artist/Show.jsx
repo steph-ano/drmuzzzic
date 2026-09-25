@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useMemo } from 'react';
 import { Head, Link } from '@inertiajs/react';
 import {
     ArrowLeft,
@@ -11,6 +11,7 @@ import {
     ChevronDown,
     ChevronUp,
     Sparkles,
+    ArrowUpDown,
 } from 'lucide-react';
 import Navbar from '@/Components/Navbar';
 import AlbumCard from '@/Components/AlbumCard';
@@ -20,7 +21,16 @@ import ImageFallback from '@/Components/ImageFallback';
 export default function Show({ artist, albums = [] }) {
     const [selectedAlbum, setSelectedAlbum] = useState(null);
     const [isBioExpanded, setIsBioExpanded] = useState(false);
+    const [sortOrder, setSortOrder] = useState('desc'); // 'desc' = most recent first, 'asc' = oldest first
     const carouselRef = useRef(null);
+
+    const sortedAlbums = useMemo(() => {
+        return [...albums].sort((a, b) => {
+            const yearA = a.year || (sortOrder === 'desc' ? -9999 : 9999);
+            const yearB = b.year || (sortOrder === 'desc' ? -9999 : 9999);
+            return sortOrder === 'desc' ? yearB - yearA : yearA - yearB;
+        });
+    }, [albums, sortOrder]);
 
     const scrollCarousel = (direction) => {
         if (!carouselRef.current) return;
@@ -123,7 +133,7 @@ export default function Show({ artist, albums = [] }) {
                         </div>
                         <div>
                             <p className="text-2xl font-bold font-display text-white">
-                                {albums.length}
+                                {sortedAlbums.length}
                             </p>
                             <p className="text-xs uppercase tracking-wider text-neutral-400">
                                 Discography Releases
@@ -183,46 +193,62 @@ export default function Show({ artist, albums = [] }) {
 
                 {/* Chronological Discography Carousel */}
                 <section className="space-y-6">
-                    <div className="flex items-center justify-between">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                         <div>
                             <span className="text-xs font-semibold uppercase tracking-widest text-amber-400">
-                                Chronological Catalogue
+                                {sortOrder === 'desc' ? 'Latest Releases to Classics' : 'Classics to Latest Releases'}
                             </span>
                             <h2 className="text-2xl sm:text-3xl font-bold font-display text-white mt-1">
                                 Complete Discography
                             </h2>
                         </div>
 
-                        {/* Carousel Scroll Controls */}
-                        {albums.length > 2 && (
-                            <div className="flex items-center space-x-2">
+                        {/* Sort Order Toggle & Carousel Navigation Controls */}
+                        <div className="flex items-center space-x-3 self-end sm:self-auto">
+                            {/* Sort Toggle Button */}
+                            {sortedAlbums.length > 1 && (
                                 <button
                                     type="button"
-                                    onClick={() => scrollCarousel('left')}
-                                    className="p-2.5 rounded-full bg-neutral-900 hover:bg-neutral-800 border border-white/10 hover:border-amber-400/40 text-neutral-300 hover:text-white transition-all shadow-md"
-                                    aria-label="Scroll left"
+                                    onClick={() => setSortOrder(prev => prev === 'desc' ? 'asc' : 'desc')}
+                                    className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-full bg-neutral-900 hover:bg-neutral-800 border border-white/10 hover:border-amber-400/40 text-xs font-semibold text-neutral-200 hover:text-white transition-all shadow-md cursor-pointer"
+                                    title="Click to change order"
                                 >
-                                    <ChevronLeft className="w-5 h-5" />
+                                    <ArrowUpDown className="w-3.5 h-3.5 text-amber-400" />
+                                    <span>{sortOrder === 'desc' ? 'Newest First' : 'Oldest First'}</span>
                                 </button>
-                                <button
-                                    type="button"
-                                    onClick={() => scrollCarousel('right')}
-                                    className="p-2.5 rounded-full bg-neutral-900 hover:bg-neutral-800 border border-white/10 hover:border-amber-400/40 text-neutral-300 hover:text-white transition-all shadow-md"
-                                    aria-label="Scroll right"
-                                >
-                                    <ChevronRight className="w-5 h-5" />
-                                </button>
-                            </div>
-                        )}
+                            )}
+
+                            {/* Carousel Scroll Controls */}
+                            {sortedAlbums.length > 2 && (
+                                <div className="flex items-center space-x-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => scrollCarousel('left')}
+                                        className="p-2.5 rounded-full bg-neutral-900 hover:bg-neutral-800 border border-white/10 hover:border-amber-400/40 text-neutral-300 hover:text-white transition-all shadow-md cursor-pointer"
+                                        aria-label="Scroll left"
+                                    >
+                                        <ChevronLeft className="w-5 h-5" />
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => scrollCarousel('right')}
+                                        className="p-2.5 rounded-full bg-neutral-900 hover:bg-neutral-800 border border-white/10 hover:border-amber-400/40 text-neutral-300 hover:text-white transition-all shadow-md cursor-pointer"
+                                        aria-label="Scroll right"
+                                    >
+                                        <ChevronRight className="w-5 h-5" />
+                                    </button>
+                                </div>
+                            )}
+                        </div>
                     </div>
 
                     {/* Horizontal Scroll Snap Carousel */}
-                    {albums.length > 0 ? (
+                    {sortedAlbums.length > 0 ? (
                         <div
                             ref={carouselRef}
                             className="flex space-x-5 overflow-x-auto pb-6 pt-2 snap-carousel no-scrollbar scroll-smooth"
                         >
-                            {albums.map((album) => (
+                            {sortedAlbums.map((album) => (
                                 <AlbumCard
                                     key={album.id}
                                     album={album}

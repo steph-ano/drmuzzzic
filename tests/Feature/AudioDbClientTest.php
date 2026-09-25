@@ -88,10 +88,10 @@ class AudioDbClientTest extends TestCase
         $albums = $this->client->getArtistAlbums('111239');
 
         $this->assertCount(2, $albums);
-        // Verify chronological sorting (2000 before 2002)
-        $this->assertEquals('Parachutes', $albums->first()['title']);
-        $this->assertEquals(2000, $albums->first()['year']);
-        $this->assertEquals(2002, $albums->last()['year']);
+        // Verify chronological sorting (newest 2002 before 2000)
+        $this->assertEquals('A Rush of Blood to the Head', $albums->first()['title']);
+        $this->assertEquals(2002, $albums->first()['year']);
+        $this->assertEquals(2000, $albums->last()['year']);
     }
 
     public function test_track_duration_formatting(): void

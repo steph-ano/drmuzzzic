@@ -110,13 +110,13 @@ class AudioDbClient
             }
 
             return collect($albums)
-                ->sortBy(fn ($album) => $album['year'] ?? 9999)
+                ->sortByDesc(fn ($album) => $album['year'] ?? 0)
                 ->values()
                 ->all();
         });
 
         return collect(is_array($cached) ? $cached : [])
-            ->sortBy(fn ($album) => $album['year'] ?? 9999)
+            ->sortByDesc(fn ($album) => $album['year'] ?? 0)
             ->values();
     }
 
@@ -229,7 +229,7 @@ class AudioDbClient
                         'thumb_url' => $hdArtwork,
                     ];
                 })
-                ->sortBy(fn ($album) => $album['year'] ?? 9999)
+                ->sortByDesc(fn ($album) => $album['year'] ?? 0)
                 ->values();
         } catch (\Throwable $e) {
             Log::warning('Error enriching discography from public provider: ' . $e->getMessage());
