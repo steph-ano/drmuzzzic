@@ -61,7 +61,7 @@ class ArtistController extends Controller
             abort(404, 'Artist not found');
         }
 
-        $albums = $this->audioDb->getArtistAlbums($artist['id']);
+        $albums = $this->audioDb->getArtistAlbums($artist['id'], $artist['name']);
 
         return Inertia::render('Artist/Show', [
             'artist' => $artist,

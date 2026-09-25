@@ -32,16 +32,18 @@ class AudioDbClient
 
         $cacheKey = 'audiodb:search:' . md5(strtolower($cleanQuery));
 
-        return Cache::remember($cacheKey, $this->cacheTtl, function () use ($cleanQuery) {
-            $data = $this->get('search.php', ['s' => $cleanQuery]);
-            $artists = $data['artists'] ?? [];
+        $data = Cache::remember($cacheKey, $this->cacheTtl, function () use ($cleanQuery) {
+            $res = $this->get('search.php', ['s' => $cleanQuery]);
+            $artists = $res['artists'] ?? [];
 
             if (!is_array($artists)) {
-                return collect();
+                return [];
             }
 
-            return collect($artists)->map(fn ($artist) => $this->normalizeArtist($artist));
+            return collect($artists)->map(fn ($artist) => $this->normalizeArtist($artist))->values()->all();
         });
+
+        return collect(is_array($data) ? $data : []);
     }
 
     /**
@@ -73,33 +75,53 @@ class AudioDbClient
 
     /**
      * Get albums for an artist, sorted chronologically by year.
+     * Overcomes TheAudioDB free test key 1-album cap by enriching with open catalogue.
      */
-    public function getArtistAlbums(string $artistId): Collection
+    public function getArtistAlbums(string $artistId, ?string $artistName = null): Collection
     {
         $cleanId = trim($artistId);
-        if (empty($cleanId)) {
+        $cleanName = trim((string) $artistName);
+
+        if (empty($cleanId) && empty($cleanName)) {
             return collect();
         }
 
-        $cacheKey = "audiodb:albums:{$cleanId}";
+        $cacheKey = "audiodb:albums:" . md5("{$cleanId}_{$cleanName}");
 
-        return Cache::remember($cacheKey, $this->cacheTtl, function () use ($cleanId) {
-            $data = $this->get('album.php', ['i' => $cleanId]);
-            $albums = $data['album'] ?? [];
+        $cached = Cache::remember($cacheKey, $this->cacheTtl, function () use ($cleanId, $cleanName) {
+            $albums = [];
 
-            if (!is_array($albums)) {
-                return collect();
+            if (!empty($cleanId)) {
+                $data = $this->get('album.php', ['i' => $cleanId]);
+                $rawAlbums = $data['album'] ?? [];
+
+                if (is_array($rawAlbums)) {
+                    $albums = collect($rawAlbums)->map(fn ($album) => $this->normalizeAlbum($album))->values()->all();
+                }
+            }
+
+            // TheAudioDB free tier (key 123) intentionally caps discographies to 1 album.
+            // If capped or empty, enrich via open music catalogue for complete discographies.
+            if (count($albums) <= 1 && !empty($cleanName)) {
+                $enrichedAlbums = $this->fetchEnrichedAlbums($cleanName, $cleanId);
+                if ($enrichedAlbums->isNotEmpty()) {
+                    return $enrichedAlbums->values()->all();
+                }
             }
 
             return collect($albums)
-                ->map(fn ($album) => $this->normalizeAlbum($album))
                 ->sortBy(fn ($album) => $album['year'] ?? 9999)
-                ->values();
+                ->values()
+                ->all();
         });
+
+        return collect(is_array($cached) ? $cached : [])
+            ->sortBy(fn ($album) => $album['year'] ?? 9999)
+            ->values();
     }
 
     /**
-     * Get tracklist for an album.
+     * Get tracklist for an album. Supports TheAudioDB and enriched providers.
      */
     public function getAlbumTracks(string $albumId): Collection
     {
@@ -110,19 +132,161 @@ class AudioDbClient
 
         $cacheKey = "audiodb:tracks:{$cleanId}";
 
-        return Cache::remember($cacheKey, $this->cacheTtl, function () use ($cleanId) {
+        $cached = Cache::remember($cacheKey, $this->cacheTtl, function () use ($cleanId) {
+            // Check if this is an enriched external album ID (e.g. from Apple Music catalogue)
+            if (str_starts_with($cleanId, 'ext_') || (is_numeric($cleanId) && strlen($cleanId) >= 8)) {
+                $numericId = str_replace('ext_', '', $cleanId);
+                $tracks = $this->fetchEnrichedTracks($numericId);
+                if ($tracks->isNotEmpty()) {
+                    return $tracks->values()->all();
+                }
+            }
+
             $data = $this->get('track.php', ['m' => $cleanId]);
             $tracks = $data['track'] ?? [];
 
-            if (!is_array($tracks)) {
+            if (is_array($tracks) && !empty($tracks)) {
+                return collect($tracks)
+                    ->map(fn ($track) => $this->normalizeTrack($track))
+                    ->sortBy(fn ($track) => $track['track_number'] ?? 999)
+                    ->values()
+                    ->all();
+            }
+
+            // Fallback lookup
+            return $this->fetchEnrichedTracks($cleanId)->values()->all();
+        });
+
+        return collect(is_array($cached) ? $cached : []);
+    }
+
+    /**
+     * Enrich discography from open public music database (iTunes API).
+     */
+    protected function fetchEnrichedAlbums(string $artistName, string $artistId): Collection
+    {
+        try {
+            $url = 'https://itunes.apple.com/search';
+            $response = Http::withoutVerifying()
+                ->timeout(8)
+                ->get($url, [
+                    'term' => $artistName,
+                    'entity' => 'album',
+                    'limit' => 35,
+                ]);
+
+            if (!$response->successful()) {
                 return collect();
             }
 
-            return collect($tracks)
-                ->map(fn ($track) => $this->normalizeTrack($track))
-                ->sortBy(fn ($track) => $track['track_number'] ?? 999)
+            $results = $response->json('results') ?? [];
+            if (!is_array($results)) {
+                return collect();
+            }
+
+            $seenTitles = [];
+
+            return collect($results)
+                ->filter(function ($item) use ($artistName, &$seenTitles) {
+                    $itemArtist = strtolower($item['artistName'] ?? '');
+                    $targetArtist = strtolower($artistName);
+
+                    // Check artist name match
+                    if (!str_contains($itemArtist, $targetArtist) && !str_contains($targetArtist, $itemArtist)) {
+                        return false;
+                    }
+
+                    $title = strtolower($item['collectionName'] ?? '');
+                    // Normalize title (remove deluxe/anniversary variations for deduping)
+                    $cleanTitle = preg_replace('/(\(.*?\)|\[.*?\]|-.*edition.*|-.*remaster.*)/i', '', $title);
+                    $cleanTitle = trim($cleanTitle);
+
+                    if (empty($cleanTitle) || isset($seenTitles[$cleanTitle]) || str_contains($title, 'karaoke') || str_contains($title, ' - single') || str_contains($title, '- single')) {
+                        return false;
+                    }
+
+                    $seenTitles[$cleanTitle] = true;
+                    return true;
+                })
+                ->map(function ($item) use ($artistId) {
+                    $year = isset($item['releaseDate']) && strlen($item['releaseDate']) >= 4
+                        ? (int) substr($item['releaseDate'], 0, 4)
+                        : null;
+
+                    // Upgrade artwork resolution to 600x600 for HD display
+                    $artwork = $item['artworkUrl100'] ?? '';
+                    $hdArtwork = !empty($artwork)
+                        ? str_replace('100x100bb', '600x600bb', $artwork)
+                        : null;
+
+                    return [
+                        'id' => 'ext_' . ($item['collectionId'] ?? ''),
+                        'artist_id' => $artistId,
+                        'title' => $item['collectionName'] ?? 'Untitled Album',
+                        'year' => $year,
+                        'genre' => $item['primaryGenreName'] ?? null,
+                        'description' => null,
+                        'thumb_url' => $hdArtwork,
+                    ];
+                })
+                ->sortBy(fn ($album) => $album['year'] ?? 9999)
                 ->values();
-        });
+        } catch (\Throwable $e) {
+            Log::warning('Error enriching discography from public provider: ' . $e->getMessage());
+            return collect();
+        }
+    }
+
+    /**
+     * Enrich tracklist with 30s playable audio previews.
+     */
+    protected function fetchEnrichedTracks(string $collectionId): Collection
+    {
+        try {
+            $numericId = preg_replace('/[^0-9]/', '', $collectionId);
+            if (empty($numericId)) {
+                return collect();
+            }
+
+            $url = 'https://itunes.apple.com/lookup';
+            $response = Http::withoutVerifying()
+                ->timeout(8)
+                ->get($url, [
+                    'id' => $numericId,
+                    'entity' => 'song',
+                ]);
+
+            if (!$response->successful()) {
+                return collect();
+            }
+
+            $results = $response->json('results') ?? [];
+            if (!is_array($results)) {
+                return collect();
+            }
+
+            return collect($results)
+                ->filter(fn ($item) => ($item['wrapperType'] ?? '') === 'track')
+                ->map(function ($item) use ($collectionId) {
+                    $durationMs = isset($item['trackTimeMillis']) ? (int) $item['trackTimeMillis'] : 0;
+                    return [
+                        'id' => (string) ($item['trackId'] ?? ''),
+                        'album_id' => $collectionId,
+                        'artist_id' => (string) ($item['artistId'] ?? ''),
+                        'title' => $item['trackName'] ?? 'Untitled Track',
+                        'track_number' => isset($item['trackNumber']) ? (int) $item['trackNumber'] : null,
+                        'duration_ms' => $durationMs,
+                        'duration_formatted' => $this->formatDuration($durationMs),
+                        'video_url' => null,
+                        'preview_url' => $item['previewUrl'] ?? null,
+                    ];
+                })
+                ->sortBy(fn ($t) => $t['track_number'] ?? 999)
+                ->values();
+        } catch (\Throwable $e) {
+            Log::warning('Error fetching enriched tracklist: ' . $e->getMessage());
+            return collect();
+        }
     }
 
     /**
@@ -133,7 +297,8 @@ class AudioDbClient
         $url = "{$this->baseUrl}/{$this->apiKey}/{$endpoint}";
 
         try {
-            $response = Http::timeout(15)
+            $response = Http::withoutVerifying()
+                ->timeout(15)
                 ->retry(2, 300, throw: false)
                 ->get($url, $queryParams);
 
@@ -202,10 +367,6 @@ class AudioDbClient
     protected function normalizeTrack(array $raw): array
     {
         $durationMs = isset($raw['intDuration']) && is_numeric($raw['intDuration']) ? (int) $raw['intDuration'] : 0;
-        $totalSeconds = (int) round($durationMs / 1000);
-        $minutes = floor($totalSeconds / 60);
-        $seconds = $totalSeconds % 60;
-        $formattedDuration = $totalSeconds > 0 ? sprintf('%d:%02d', $minutes, $seconds) : '--:--';
 
         return [
             'id' => (string) ($raw['idTrack'] ?? ''),
@@ -214,9 +375,22 @@ class AudioDbClient
             'title' => $raw['strTrack'] ?? 'Untitled Track',
             'track_number' => isset($raw['intTrackNumber']) && is_numeric($raw['intTrackNumber']) ? (int) $raw['intTrackNumber'] : null,
             'duration_ms' => $durationMs,
-            'duration_formatted' => $formattedDuration,
+            'duration_formatted' => $this->formatDuration($durationMs),
             'video_url' => $raw['strMusicVid'] ?? null,
+            'preview_url' => null,
         ];
+    }
+
+    /**
+     * Convert milliseconds into formatted MM:SS string.
+     */
+    protected function formatDuration(int $durationMs): string
+    {
+        $totalSeconds = (int) round($durationMs / 1000);
+        $minutes = floor($totalSeconds / 60);
+        $seconds = $totalSeconds % 60;
+
+        return $totalSeconds > 0 ? sprintf('%d:%02d', $minutes, $seconds) : '--:--';
     }
 
     /**
