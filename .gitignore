@@ -3,6 +3,8 @@
 .env.backup
 .env.production
 *.env
+*.sqlite
+*.sqlite-journal
 
 # Dependencies & Build artifacts
 /node_modules
