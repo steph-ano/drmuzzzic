@@ -133,8 +133,8 @@ class AudioDbClient
         $url = "{$this->baseUrl}/{$this->apiKey}/{$endpoint}";
 
         try {
-            $response = Http::timeout(6)
-                ->retry(2, 200, throw: false)
+            $response = Http::timeout(15)
+                ->retry(2, 300, throw: false)
                 ->get($url, $queryParams);
 
             if ($response->successful()) {
